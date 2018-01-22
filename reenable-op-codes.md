@@ -188,7 +188,7 @@ Impact of successful execution:
 * number of elements on stack is reduced by one
 
 Unit tests:
-1. `a b OP_MOD -> failure` where `!isnum(a)`, `!isnum(b)` - both operands must be valid numbers
+1. `a b OP_MOD -> failure` where `!isnum(a)` or `!isnum(b)` - both operands must be valid numbers
 2. `a 0 OP_MOD -> failure` - division by positive zero (all sizes), negative zero (all sizes), `OP_0` 
 3. `a b OP_MOD -> failure` where `a < 0`, `b < 0` - both operands must be positive
 4. check valid results for operands of different lengths `1..4`
@@ -201,8 +201,10 @@ Produces byte string of zero bytes.
 The operator must fail if:
 1. `!isnum(n)` - `n` is not a number
 2. `n < 0` - the length must be positive
-  * if `n == 0` then a zero length byte string is produced
 2. `n > MAX_SCRIPT_ELEMENT_SIZE` - the length of the result would be too large
+
+Notes:
+* `n = 0` is valid, a zero length byte string is produced
 
 Impact of successful execution:
 * stack memory use increased by `n - len(n)`, maximum `MAX_SCRIPT_ELEMENT_SIZE`
