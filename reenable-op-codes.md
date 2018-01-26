@@ -2,9 +2,6 @@
 
 Version 0.1, 2018-01-19 - DRAFT FOR DISCUSSION
 
-
-
-
 ## Introduction
 
 This document describes proposed requirements for reactivating several script op codes.  In 2011 the discovery of
@@ -65,19 +62,54 @@ simulated with varying combinations of `OP_SPLIT`, `OP_ROT` and `OP_DROP`.
 
 ## Risks and philosophical approach
 
-In general the approach taken is a minimalist one in order limit edge cases as much as possible.  Where it is possible
-for a single more limited op code to be combined with other op codes to achieve a functionality that is preferred over
-a more complex op code.  Input conditions that create ambiguous or undefined behaviour should fail fast.
+In general the approach taken is a minimalist one in order limit edge cases as much as possible.  If a complex
+functionality is needed then preference is given to a limited op code that can be combined with other op codes to achieve 
+the functionality, rather than introducing a more complex op code. This approach will lead to safer but longer scripts, 
+which may subsequently require increasing the limitation on the number of op codes allowed per script.  
 
-Each op code should be examined for the following risk conditions and mitigating behaviour defined explcitly:
-* Operand byte length mismatch.  Where it would be normally expected that two operands would be of matching byte lengths
+Input conditions that create ambiguous or undefined behaviour must fail fast.
+
+Each op code must be examined for the following risk conditions and mitigating behaviour explcitly defined:
+* Operand byte length mismatch - Where it would be normally expected that two operands would be of matching byte lengths
 the resultant behaviour should be defined.
-* Signed integer.  Whether signed integers are permitted operands and whether any special handling is required.
-* Stack size.  Both number of elements and total size of elements. 
-* TODO resource (CPU) utilization - exponential cycle cost attacks
-* Overflows.  Defined behaviour in the instance that result of the operation exceeds MAX_SCRIPT_ELEMENT_SIZE
-* TODO endian issues ???
-* Empty byte vector operands.  Whether empty byte vectors should be allowed as a representation of zero.
+* Integer ranges - Whether negative integers are permitted operands and whether any special handling is required.
+* Resource utilization:
+  * Stack size - the impact on both the number of elements and the total size of elements must be analysed 
+  * Processor utilization - the potential for exponential cycle cost attacks must be analysed
+* Overflows - Behaviour in the instance that the result of the operation exceeds `MAX_SCRIPT_ELEMENT_SIZE` must be defined.
+* Empty byte vector operands - Whether empty byte vectors should be allowed as a representation of zero.
+* Endian issues - Whether endian-ness can impact the operation. *Note: needs more*
+
+### Risk of unbounded element size growth
+
+Four of the proposed operators can produce elements which are significantly longer than the lengths of their operands.
+If mitigations are not put in place then these operators could be abused to cause memory exhaustion errors.
+
+These operators are: `OP_CAT`, `OP_ZEROES`, `OP_REPEAT`, and `OP_PADLEFT`. Examples of use of these operators which 
+could cause issues are:
+* `<constant> [OP_DUP OP_CAT ...]`, where the `OP_DUP OP_CAT` sequence is repeated as often as possible
+* `<max int> OP_ZEROES`
+* `OP_1 <max int> OP_REPEAT`
+* `OP_1 <max int> OP_PADLEFT`
+
+The Bitcoin Cash Script system has an existing constraint on the size of elements, `MAX_SCRIPT_ELEMENT_SIZE`. Constants in 
+scripts must have a length which is less than or equal to this limit. Violation of this constraint results in an invalid
+transaction which will be rejected by the Bitcoin Cash network. At the time of writing, `MAX_SCRIPT_ELEMENT_SIZE` is 
+equal to 520 bytes, however this value could conceivably change. The analysis and mitigations here only consider the 
+existence of the constraint and do not consider its current value or any proposals for changing the value.
+
+Existing implementations validate the size of constants when they are put on the stack but do not consistently validate 
+the size of the outputs of operators, possibly because existing operators can only minimally increase the size of an 
+operand, for example `0xFF OP_1ADD -> 0x0100`.
+
+The specifications of the proposed operators include an explicit constraint on the size of the outputs of these operators.
+Implementations *must* check the size of the result of the operators, before execution of the operator, and cause a script
+failure if the constraint is violated.
+
+This constraint will prevent unbounded growth of size of elements on the stack.
+
+Discussion point: should we take this opportunity to *explicitly* state that the results from *all* operators are subject
+to the `MAX_SCRIPT_ELEMENT_SIZE` constraint? Would this break any existing systems?
 
 ## Definitions
 
@@ -90,13 +122,14 @@ between a restrictive and a more liberal rule.
 
 ## Specification
 
-Global failure conditions apply to all operations. These failure conditions must be checked by the implementation when 
+These failure conditions apply to all operators and must be checked by the implementation when 
 it is possible that they will occur:
 * for all e : elements on the stack, `0 <= len(e) <= MAX_SCRIPT_ELEMENT_SIZE`
 * for each operator, the required number of operands are present on the stack when the operand is executed
 
-These unit tests should be included for every operation:
-1. executing the operation with an incorrect number of operands causes a failure
+For each operator we propose a number of *unit tests*, particularly for edge conditions, which could be implemented to 
+test implementations. The implementation of every operator *must* check the number of operands on the stack. 
+In the interests of brevity we have not listed this *unit test* for every operator below.
 
 ### OP_CAT
 Concatenates two operands.
@@ -104,24 +137,18 @@ Concatenates two operands.
     x1 x2 OP_CAT → out
     
 The operator must fail if:
-* `0 <= len(out) <= MAX_SCRIPT_ELEMENT_SIZE` - the operation cannot output elements that violate the constraint on the element size
-    * Draft discussion: OP_CAT is the only op code (?) that can output a vector of greater length than it's inputs.  Previously there
-    has been no other way introduce a larger data element to the stack.  Also note that
-    that op code outputs are not constrained by MAX_SCRIPT_ELEMENT_SIZE. As such a series of OP_CAT OP_DUP OP_CAT OP_DUP etc... creates
-     exponential growth in the output vector length.  Given that a side effect of enabling OP_CAT is to introduce a new mechanism for creating
-     script stack elements it is consistent to apply the same size constrain that is effectively in place for other mechanism.  Consequently
-     any future decision to relax that constraint will consistently apply to OP_CAT outputs as well.
-* note that the concatentation of a zero length operand is valid
+* `len(out) > MAX_SCRIPT_ELEMENT_SIZE` - the operation cannot output elements that violate the constraint on the element size
+
+Notes:
+* concatentation of a zero length operand is valid
+* see *Risk of unbounded element size growth* above
 
 Impact of successful execution:
 * stack memory use is constant
 * number of elements on stack is reduced by one
 
-The limit on the length of the output prevents the memory exhaustion attack and results in the operation having less 
-impact on stack size than existing OP_DUP operators.
-
 Unit tests:
-1. `maxlen_x y OP_CAT → failure` – concatenating any operand, including a single byte value (e.g. `OP_1`), onto a maximum sized array causes failure
+1. `maxlen_x y OP_CAT → failure` – concatenating any operand, where `len(y) > 0`, onto a maximum sized array causes failure
 3. `large_x large_y OP_CAT → failure` – concatenating two operands, where the total length is greater than `MAX_SCRIPT_ELEMENT_SIZE`, causes failure
 4. `OP_0 OP_0 OP_CAT → OP_0` – concatenating two empty arrays results in an empty array
 5. `x OP_0 OP_CAT → x` – concatenating an empty array onto any operand results in the operand, including when `len(x) = MAX_SCRIPT_ELEMENT_SIZE`
@@ -133,28 +160,28 @@ Split the operand at the given position.
 
     x n OP_SPLIT -> x1 x2
 
-Notes:
-* `x` is split at position `n`, where `n` is the number of bytes from the beginning
-* `x1` will be the first `n` bytes of `x` and `x2` will be the remaining bytes 
-* if `n == 0`, then `x1` is the empty array and `x2 == x`
-* *RULE OPTIONS*
-    * Liberal: if `n >= len(x)`, then `x1 == x` and `x2` is the empty array. OR
-    * Restrictive: if `n > len(x)`, then the operator fail.
-    * Discussion: Arguably allowing n > len(x) opens the possibility of a script continuing to run under unexpected
-        conditions.  The restrictive option eliminates out-of-bounds errors.  Whilst potentially placing the burden
-        on the script author to do an additional length check.
-* `x n OP_SPLIT OP_CAT` -> `x` - for all `x` and for all `n >= 0`
-    
 The operator must fail if:
 * `!isnum(n)` - `n` is not a number
 * `n < 0` - `n` is negative
 
+Notes:
+* `x` is split at position `n`, where `n` is the number of bytes from the beginning of `x`
+* `x1` will be the first `n` bytes of `x` and `x2` will be the remaining bytes  of `x`
+* if `n == 0`, then `x1` is the empty array and `x2 == x`
+* *RULE OPTIONS*
+    * Liberal: if `n >= len(x)`, then `x1 == x` and `x2` is the empty array. OR
+    * Restrictive: if `n > len(x)`, then the operator fails.
+    * Discussion: Arguably allowing n > len(x) opens the possibility of a script continuing to run under unexpected
+        conditions.  The restrictive option eliminates out-of-bounds errors.  Whilst potentially placing the burden
+        on the script author to do an additional length check.
+* `x n OP_SPLIT OP_CAT -> x` - for all `x` and for all `n >= 0`
+    
 Impact of successful execution:
 * stack memory use is constant (slight reduction by `len(n)`)
 * number of elements on stack is constant
 
 Unit tests:
-* `OP_0 n OP_SPLIT -> OP_0 OP_0`, for all positive numbers n - execution of OP_SPLIT on empty array results in two empty arrays
+* `OP_0 n OP_SPLIT -> OP_0 OP_0`, for all valid numbers `n` (depending on chosen option) - execution of OP_SPLIT on empty array results in two empty arrays
 * `x 0 OP_SPLIT -> OP_0 x`
 * `x len(x) OP_SPLIT -> x OP_0` 
 
@@ -173,7 +200,7 @@ Impact of successful execution:
 
 Unit tests:
 1. `x1 x2 OP_AND -> failure`, where `len(x1) != len(x2)` - operation fails when size of operands not equal
-2. `x1 x2 OP_AND -> x1 & x2` - check valid results
+2. check valid results for operands of different lengths
 
 TODO: minimal encoding of numbers – would this cause numbers (byte arrays where len <= 4) to be automatically left truncated? Is it possible to AND the values 0x0005 and 0x0100?
 
@@ -192,7 +219,7 @@ Impact of successful execution:
 
 Unit tests:
 1. `x1 x2 OP_OR -> failure`, where `len(x1) != len(x2)` - operation fails when size of operands not equal
-2. `x1 x2 OP_OR -> x1 | x2` - check valid results
+2. check valid results for operands of different lengths
 
 ### OP_XOR
 Boolean *xor* between each bit in the operands.
@@ -208,7 +235,7 @@ Impact of successful execution:
 
 Unit tests:
 1. `x1 x2 OP_XOR -> failure`, where `len(x1) != len(x2)` - operation fails when size of operands not equal
-2. `x1 x2 OP_XOR -> x1 xor x2` - check valid results
+2. check valid results for operands of different lengths
     
 ### OP_MOD
 Returns the remainder after dividing a by b.
@@ -237,27 +264,27 @@ Produces byte string of zero bytes.
 	
 The operator must fail if:
 1. `!isnum(n)` - `n` is not a number
-2. `n < 0` - the length must be positive
+2. `n < 0` - `n` is less than zero
 2. `n > MAX_SCRIPT_ELEMENT_SIZE` - the length of the result would be too large
 
 Notes:
-* `n = 0` is valid, a zero length byte string is produced
+* `n = 0` is valid, a zero length byte string (`OP_0`) is produced
+* see *Risk of unbounded element size growth* above
 
 Impact of successful execution:
 * stack memory use increased by `n - len(n)`, maximum `MAX_SCRIPT_ELEMENT_SIZE`
-* number of elements on stack is constant 
+* number of elements on the stack is constant 
 
 Unit tests:
 1. `0 OP_ZEROES -> OP_0` for all values of 0 (positive zero, negative zero, `OP_0`)
 2. `a OP_ZEROES -> failure` where `!isnum(a)`
 3. `a OP_ZEROES -> failure` where `a < 0`
 4. `a OP_ZEROES -> failure` where `a > MAX_SCRIPT_ELEMENT_SIZE`
-5. valid samples
  
 Still to investigate: minimal encoding of numbers – could this be used to produce an invalid number which would cause a failure?
 
 ### OP_REPEAT
-Produce array of repeated bytes.
+Produce an array of repeated bytes.
 
 	x n OP_REPEAT → out
 	
@@ -266,9 +293,10 @@ The operator must fail if:
 2. `n < 0` - `n` is negative 
 2. `len(x)*n > MAX_SCRIPT_ELEMENT_SIZE` - the length of the result would be too large
 
-Note that:
+Notes:
 * repeating an array zero times is a valid operation and results in `OP_0`
 * repeating an empty array (`x = OP_0`) is a valid operation and produces an empty array (`OP_0`)
+* see *Risk of unbounded element size growth* above
 
 Impact of successful execution:
 * stack memory use increased by `(len(x) * (n - 1)) - len(n)`, maximum `MAX_SCRIPT_ELEMENT_SIZE`
@@ -281,39 +309,37 @@ Unit tests:
 4. `OP_0 n OP_REPEAT → OP_0` – repeating an empty array an arbitrary number of times produces an empty array
 5. `OP_0 (MAX_SCRIPT_ELEMENT_SIZE + 1) OP_REPEAT -> OP_0` - should not fail because output will still be `OP_0`
 5. `OP_1 (MAX_SCRIPT_ELEMENT_SIZE + 1) OP_REPEAT -> failure` - result is too large   
-6. valid samples
 
 Still to investigate: same as OP_ZEROES re minimal encoding
 
 ### OP_PADLEFT
-Pad the left of the byte array with zeroes.
+Pad the left of the byte array with zero bytes.
 
 	x n OP_PADLEFT → out
 	
 The operator must fail if:
 1. `!isnum(n)` - `n` is not a number
-2. `n < 0` - `n` is less than zero
-3.
+2. `n < 0` - `n` is negative
 4. `len(x)+n > MAX_SCRIPT_ELEMENT_SIZE` - the length of the result would be too large
 
 Note that:
 * `n = 0` is valid
+* see *Risk of unbounded element size growth* above
 
 Impact of successful execution:
 * stack memory use increased by `n - len(n)`, maximum `MAX_SCRIPT_ELEMENT_SIZE`
 * number of elements on stack is reduced by one
 
 Unit tests:
-1. `x n OP_PAD_LEFT -> failure` where `!isnum(n)` - fails if `n` not a number
-2. `x -1 OP_PAD_LEFT -> failure` - fails if `n < 0`
-3. `x 0 OP_PAD_LEFT -> x` for all number zero
-4. `OP_1 MAX_SCRIPT_ELEMENT_SIZE OP_PAD_LEFT -> failure` - too large
-5. `OP_0 MAX_SCRIPT_ELEMENT_SIZE OP_PAD_LEFT -> out` - `out` is an array of `MAX_SCRIPT_ELEMENT_SIZE` zeros
-6. `large 1 OP_PAD_LEFT -> failure` where `len(large) = MAX_SCRIPT_ELEMENT_SIZE`
-7. valid samples
+1. `x n OP_PADLEFT -> failure` where `!isnum(n)` - fails if `n` not a number
+2. `x -1 OP_PADLEFT -> failure` - fails if `n < 0`
+3. `x 0 OP_PADLEFT -> x` for all number zero
+4. `OP_1 MAX_SCRIPT_ELEMENT_SIZE OP_PADLEFT -> failure` - too large
+5. `OP_0 MAX_SCRIPT_ELEMENT_SIZE OP_PADLEFT -> out` - `out` is an array of `MAX_SCRIPT_ELEMENT_SIZE` zeros
+6. `large 1 OP_PADLEFT -> failure` where `len(large) = MAX_SCRIPT_ELEMENT_SIZE`
 
 ## Test plan
 
 ## References
 
-<a name="op_codes">[1]</a> https://en.bitcoin.it/wiki/Script#Opcodes
+* <a name="op_codes">[1]</a> https://en.bitcoin.it/wiki/Script#Opcodes
