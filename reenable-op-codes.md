@@ -72,17 +72,21 @@ a more complex op code.  Input conditions that create ambiguous or undefined beh
 Each op code should be examined for the following risk conditions and mitigating behaviour defined explcitly:
 * Operand byte length mismatch.  Where it would be normally expected that two operands would be of matching byte lengths
 the resultant behaviour should be defined.
-* TODO signed integer issues
-* TODO stack size issues - limit operand and output size
+* Signed integer.  Whether signed integers are permitted operands and whether any special handling is required.
+* Stack size.  Both number of elements and total size of elements. 
 * TODO resource (CPU) utilization - exponential cycle cost attacks
-* TODO overflow issue, e.g. OP_MUL overflowing int32 or int64 or uint256
+* Overflows.  Defined behaviour in the instance that result of the operation exceeds MAX_SCRIPT_ELEMENT_SIZE
 * TODO endian issues ???
-* TODO empty byte vector operands
-* TODO clarify ordering of operands, top of stack is 1st operand or last (consider op_cat)
+* Empty byte vector operands.  Whether empty byte vectors should be allowed as a representation of zero.
 
 ## Definitions
 
-* *Stack memory use* - sum of the size of the elements on the stack - gives an indication of impact on memory use 
+* *Stack memory use* - sum of the size of the elements on the stack - gives an indication of impact on memory use
+* *Operand order* - in keeping with convention where multiple operands are specified the top most stack item is the 
+last operand.  e.g. `x1 x2 OP_CAT` --> x2 is the top stack item and x1 is the next from the top
+* *Rule options* - For the purposes of this draft and for further discussion some rules are presented with options.
+These are denoted by the heading *RULE OPTION* followed by an ordered list.  Generally the options will be a choice
+between a restrictive and a more liberal rule.
 
 ## Specification
 
@@ -101,7 +105,13 @@ Concatenates two operands.
     
 The operator must fail if:
 * `0 <= len(out) <= MAX_SCRIPT_ELEMENT_SIZE` - the operation cannot output elements that violate the constraint on the element size
-  * note that the concatentation of a zero length operand is valid
+    * Draft discussion: OP_CAT is the only op code (?) that can output a vector of greater length than it's inputs.  Previously there
+    has been no other way introduce a larger data element to the stack.  Also note that
+    that op code outputs are not constrained by MAX_SCRIPT_ELEMENT_SIZE. As such a series of OP_CAT OP_DUP OP_CAT OP_DUP etc... creates
+     exponential growth in the output vector length.  Given that a side effect of enabling OP_CAT is to introduce a new mechanism for creating
+     script stack elements it is consistent to apply the same size constrain that is effectively in place for other mechanism.  Consequently
+     any future decision to relax that constraint will consistently apply to OP_CAT outputs as well.
+* note that the concatentation of a zero length operand is valid
 
 Impact of successful execution:
 * stack memory use is constant
@@ -127,7 +137,12 @@ Notes:
 * `x` is split at position `n`, where `n` is the number of bytes from the beginning
 * `x1` will be the first `n` bytes of `x` and `x2` will be the remaining bytes 
 * if `n == 0`, then `x1` is the empty array and `x2 == x`
-* if `n >= len(x)`, then `x1 == x` and `x2` is the empty array
+* *RULE OPTIONS*
+    * Liberal: if `n >= len(x)`, then `x1 == x` and `x2` is the empty array. OR
+    * Restrictive: if `n > len(x)`, then the operator fail.
+    * Discussion: Arguably allowing n > len(x) opens the possibility of a script continuing to run under unexpected
+        conditions.  The restrictive option eliminates out-of-bounds errors.  Whilst potentially placing the burden
+        on the script author to do an additional length check.
 * `x n OP_SPLIT OP_CAT` -> `x` - for all `x` and for all `n >= 0`
     
 The operator must fail if:
@@ -270,15 +285,16 @@ Unit tests:
 
 Still to investigate: same as OP_ZEROES re minimal encoding
 
-### OP_PAD_LEFT
+### OP_PADLEFT
 Pad the left of the byte array with zeroes.
 
-	x n OP_PAD_LEFT → out
+	x n OP_PADLEFT → out
 	
 The operator must fail if:
 1. `!isnum(n)` - `n` is not a number
 2. `n < 0` - `n` is less than zero
-3. `len(x)+n > MAX_SCRIPT_ELEMENT_SIZE` - the length of the result would be too large
+3.
+4. `len(x)+n > MAX_SCRIPT_ELEMENT_SIZE` - the length of the result would be too large
 
 Note that:
 * `n = 0` is valid
