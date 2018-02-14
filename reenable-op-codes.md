@@ -65,6 +65,8 @@ New:
 * `x OP_BIN2NUM -> n` - convert a binary array `x` into a valid (canonical) numeric element
 * `n m OP_NUM2BIN -> out` - convert a numeric value `n` into a byte array of length `m`
 
+* `data sig addr OP_DATASIGVERIFY -> data` - Check that signature verification of `data` with `sig` is valid and produces the pubkey whose hash160 is `addr` 
+
 ** A new operation, `OP_SPLIT`, is proposed as a replacement for `OP_SUBSTR`, `OP_LEFT`and `OP_RIGHT`. All three operations can be
 simulated with varying combinations of `OP_SPLIT`, `OP_SWAP` and `OP_DROP`.
 
@@ -410,6 +412,72 @@ The operator must fail if:
 1. `n` or `m` are not valid numeric values
 2. `m < len(n)`. `n` is a valid numeric value, therefore it is already in minimal representation 
 3. `m > MAX_SCRIPT_ELEMENT_SIZE` - the result would be too large
+
+### OP_DATASIGVERIFY
+
+*OP_DATASIGVERIFY uses a new opcode number*
+
+    Opcode (decimal): 187
+    Opcode (hex): 0xbb
+
+OP_DATASIGVERIFY allows signed data to be imported into a script.  This data can then have many uses, depending on the rest of the script, such as deciding spendability of several possible addresses.  This opcode therefore enables the powerful blockchain concept of an "oracle" -- an entity that publishes authoritative statements about extra-blockchain events -- to be used in the Bitcoin Cash blockchain.  For an example use of how this opcode can be used to enable binary contracts on any security or betting on any quantitatively decidable event (such as a sports match) please [click here](https://medium.com/@g.andrew.stone/bitcoin-scripting-applications-decision-based-spending-8e7b93d7bdb9).  But this is just one example; as the Bitcoin Cash Script language grows in expressiveness, it is anticipated that this opcode will be used in many other applications.
+
+Examples:
+
+* Simplest DATASIGVERIFY:
+  * output script:  `address OP_DATASIGVERIFY`
+  * spend script: `data sig`
+
+* Realistic example: Verify that `data` is signed by `daddr` (signature `daddrsig`) and equals `x`.  Also do normal p2pkh transaction verification on `addr` (with signature `addrSig` and public key `addrPub`):
+  * output script: `daddr OP_DATASIGVERIFY x OP_EQUALVERIFY OP_DUP OP_HASH160 addr OP_EQUALVERIFY OP_CHECKSIG
+  * spend script: `addrSig addrPub data daddrsig`
+
+Implementation details:
+When OP_DATASIGVERIFY is run, the stack should look like:
+
+*top of stack*
+* address
+* signature
+* data
+
+If there are less then 3 items on the stack, the script fails.  If the address field is not 20 bytes, the script fails.
+
+OP_DATASIGVERIFY first computes the double-sha256 hash of the byte string "Bitcoin Signed Message:\n" prepended to the supplied data (stack top - 2). This is the same operation as the Bitcoin Cash message signing RPC, and is the same algorithm as is used in OP_CHECKSIGVERIFY.  It then computes a pubkey from this hash and the provided signature (stack top - 1).  It then compares the hash160 (same as OP_HASH160) of this signature to the provided address (stack top).  If the comparison fails, the script fails.
+
+Otherwise, the top 2 items are popped off the stack (leaving "data" on the top of the stack), and opcode succeeds.
+
+#### OP_DATASIGVERIFY Reference Implementation
+
+Please refer to [this github branch](https://github.com/gandrewstone/BitcoinUnlimited/tree/op_datasigverify) for a complete implementation.  But the opcode implementation is short enough to include here:
+```c++
+// This code sits inside the interpreter's opcode processing case statement
+case OP_DATASIGVERIFY:
+{
+    if (stack.size() < 3)
+        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+    valtype &data = stacktop(-3);
+    valtype &vchSig = stacktop(-2);
+    valtype &vchAddr = stacktop(-1);
+
+    if (vchAddr.size() != 20)
+        return set_error(serror, SCRIPT_ERR_INVALID_STACK_OPERATION);
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << strMessageMagic << data;
+
+    CPubKey pubkey;
+    if (!pubkey.RecoverCompact(ss.GetHash(), vchSig))
+        return set_error(serror, SCRIPT_ERR_VERIFY);
+    CKeyID id = pubkey.GetID();
+    if (id != uint160(vchAddr))
+        return set_error(serror, SCRIPT_ERR_VERIFY);
+    popstack(stack);
+    popstack(stack);
+}
+break;
+
+```
 
 
 ## Reference implementation
